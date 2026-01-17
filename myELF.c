@@ -146,19 +146,331 @@ void examine_elf_file() {
     printf("\n");
 }
 
-/* Print section names - stub */
+/* Helper function to get section type string */
+const char* get_section_type(Elf32_Word type) {
+    switch(type) {
+        case SHT_NULL: return "NULL";
+        case SHT_PROGBITS: return "PROGBITS";
+        case SHT_SYMTAB: return "SYMTAB";
+        case SHT_STRTAB: return "STRTAB";
+        case SHT_RELA: return "RELA";
+        case SHT_HASH: return "HASH";
+        case SHT_DYNAMIC: return "DYNAMIC";
+        case SHT_NOTE: return "NOTE";
+        case SHT_NOBITS: return "NOBITS";
+        case SHT_REL: return "REL";
+        case SHT_SHLIB: return "SHLIB";
+        case SHT_DYNSYM: return "DYNSYM";
+        default: return "UNKNOWN";
+    }
+}
+
+/* Print section names */
 void print_section_names() {
-    printf("not implemented yet\n");
+    int i, j;
+    Elf32_Ehdr *header;
+    Elf32_Shdr *section_header_table;
+    Elf32_Shdr *shstrtab_header;
+    char *shstrtab;
+    
+    /* Check if any files are open */
+    if (num_files == 0) {
+        printf("Error: No ELF files are currently open\n");
+        return;
+    }
+
+    /* Process each open ELF file */
+    for (i = 0; i < num_files; i++) {
+        if (map_start[i] == NULL) continue;
+        
+        header = (Elf32_Ehdr *)map_start[i];
+        
+        /* Get section header table */
+        section_header_table = (Elf32_Shdr *)((char *)map_start[i] + header->e_shoff);
+        
+        /* Get section header string table */
+        shstrtab_header = &section_header_table[header->e_shstrndx];
+        shstrtab = (char *)map_start[i] + shstrtab_header->sh_offset;
+        
+        /* Debug info */
+        if (debug_mode) {
+            printf("\n[DEBUG] File: %s\n", file_name[i]);
+            printf("[DEBUG] e_shoff (section header table offset): %d\n", header->e_shoff);
+            printf("[DEBUG] e_shnum (number of sections): %d\n", header->e_shnum);
+            printf("[DEBUG] e_shstrndx (section name string table index): %d\n", header->e_shstrndx);
+            printf("[DEBUG] shstrtab offset: %d\n", shstrtab_header->sh_offset);
+        }
+        
+        /* Print file header */
+        printf("\nFile %s\n", file_name[i]);
+        printf("[%-3s] %-20s %-10s %-10s %-10s %s\n", 
+               "Nr", "Name", "Addr", "Off", "Size", "Type");
+        
+        /* Print each section */
+        for (j = 0; j < header->e_shnum; j++) {
+            Elf32_Shdr *sh = &section_header_table[j];
+            char *name = shstrtab + sh->sh_name;
+            
+            if (debug_mode) {
+                printf("[DEBUG] Section %d: sh_name offset = %d\n", j, sh->sh_name);
+            }
+            
+            printf("[%3d] %-20s %08x %08x %08x %s\n",
+                   j,
+                   name,
+                   sh->sh_addr,
+                   sh->sh_offset,
+                   sh->sh_size,
+                   get_section_type(sh->sh_type));
+        }
+    }
 }
 
-/* Print symbols - stub */
+/* Helper function to get section name by index */
+const char* get_section_name_by_index(Elf32_Ehdr *header, void *map, int index) {
+    Elf32_Shdr *section_header_table;
+    Elf32_Shdr *shstrtab_header;
+    char *shstrtab;
+    
+    if (index == SHN_UNDEF) return "UND";
+    if (index == SHN_ABS) return "ABS";
+    if (index == SHN_COMMON) return "COM";
+    if (index >= header->e_shnum) return "???";
+    
+    section_header_table = (Elf32_Shdr *)((char *)map + header->e_shoff);
+    shstrtab_header = &section_header_table[header->e_shstrndx];
+    shstrtab = (char *)map + shstrtab_header->sh_offset;
+    
+    return shstrtab + section_header_table[index].sh_name;
+}
+
+/* Print symbols */
 void print_symbols() {
-    printf("not implemented yet\n");
+    int i, j, k;
+    Elf32_Ehdr *header;
+    Elf32_Shdr *section_header_table;
+    Elf32_Shdr *shstrtab_header;
+    char *shstrtab;
+    
+    /* Check if any files are open */
+    if (num_files == 0) {
+        printf("Error: No ELF files are currently open\n");
+        return;
+    }
+
+    /* Process each open ELF file */
+    for (i = 0; i < num_files; i++) {
+        if (map_start[i] == NULL) continue;
+        
+        header = (Elf32_Ehdr *)map_start[i];
+        section_header_table = (Elf32_Shdr *)((char *)map_start[i] + header->e_shoff);
+        shstrtab_header = &section_header_table[header->e_shstrndx];
+        shstrtab = (char *)map_start[i] + shstrtab_header->sh_offset;
+        
+        printf("\nFile %s\n", file_name[i]);
+        
+        /* Find symbol tables */
+        int found_symtab = 0;
+        for (j = 0; j < header->e_shnum; j++) {
+            Elf32_Shdr *sh = &section_header_table[j];
+            
+            if (sh->sh_type == SHT_SYMTAB || sh->sh_type == SHT_DYNSYM) {
+                found_symtab = 1;
+                
+                /* Get symbol table info */
+                Elf32_Sym *symtab = (Elf32_Sym *)((char *)map_start[i] + sh->sh_offset);
+                int num_symbols = sh->sh_size / sh->sh_entsize;
+                
+                /* Get string table for symbol names (sh_link points to it) */
+                Elf32_Shdr *strtab_header = &section_header_table[sh->sh_link];
+                char *strtab = (char *)map_start[i] + strtab_header->sh_offset;
+                
+                /* Debug info */
+                if (debug_mode) {
+                    printf("[DEBUG] Symbol table: %s\n", shstrtab + sh->sh_name);
+                    printf("[DEBUG] Symbol table size: %d bytes\n", sh->sh_size);
+                    printf("[DEBUG] Number of symbols: %d\n", num_symbols);
+                    printf("[DEBUG] String table index: %d\n", sh->sh_link);
+                }
+                
+                /* Print header */
+                printf("[%-3s] %-8s %-5s %-20s %s\n", 
+                       "Nr", "Value", "Ndx", "Section", "Name");
+                
+                /* Print each symbol */
+                for (k = 0; k < num_symbols; k++) {
+                    Elf32_Sym *sym = &symtab[k];
+                    char *sym_name = strtab + sym->st_name;
+                    const char *section_name = get_section_name_by_index(header, map_start[i], sym->st_shndx);
+                    
+                    printf("[%3d] %08x %-5d %-20s %s\n",
+                           k,
+                           sym->st_value,
+                           sym->st_shndx,
+                           section_name,
+                           sym_name);
+                }
+            }
+        }
+        
+        if (!found_symtab) {
+            printf("No symbol table found\n");
+        }
+    }
 }
 
-/* Print relocations - stub */
+/* Helper function to get relocation type string and size */
+const char* get_rel_type_string(unsigned char type) {
+    switch(type) {
+        case R_386_NONE: return "R_386_NONE";
+        case R_386_32: return "R_386_32";
+        case R_386_PC32: return "R_386_PC32";
+        case R_386_GOT32: return "R_386_GOT32";
+        case R_386_PLT32: return "R_386_PLT32";
+        case R_386_COPY: return "R_386_COPY";
+        case R_386_GLOB_DAT: return "R_386_GLOB_DAT";
+        case R_386_JMP_SLOT: return "R_386_JMP_SLOT";
+        case R_386_RELATIVE: return "R_386_RELATIVE";
+        case R_386_GOTOFF: return "R_386_GOTOFF";
+        case R_386_GOTPC: return "R_386_GOTPC";
+        default: return "UNKNOWN";
+    }
+}
+
+int get_rel_size(unsigned char type) {
+    switch(type) {
+        case R_386_32:
+        case R_386_PC32:
+        case R_386_GOT32:
+        case R_386_PLT32:
+        case R_386_GLOB_DAT:
+        case R_386_JMP_SLOT:
+        case R_386_RELATIVE:
+        case R_386_GOTOFF:
+        case R_386_GOTPC:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+/* Print relocations */
 void print_relocations() {
-    printf("not implemented yet\n");
+    int i, j, k;
+    Elf32_Ehdr *header;
+    Elf32_Shdr *section_header_table;
+    Elf32_Shdr *shstrtab_header;
+    char *shstrtab;
+    
+    /* Check if any files are open */
+    if (num_files == 0) {
+        printf("Error: No ELF files are currently open\n");
+        return;
+    }
+
+    /* Process each open ELF file */
+    for (i = 0; i < num_files; i++) {
+        if (map_start[i] == NULL) continue;
+        
+        header = (Elf32_Ehdr *)map_start[i];
+        section_header_table = (Elf32_Shdr *)((char *)map_start[i] + header->e_shoff);
+        shstrtab_header = &section_header_table[header->e_shstrndx];
+        shstrtab = (char *)map_start[i] + shstrtab_header->sh_offset;
+        
+        printf("\nFile %s relocations\n", file_name[i]);
+        
+        /* Find relocation sections */
+        int found_rel = 0;
+        for (j = 0; j < header->e_shnum; j++) {
+            Elf32_Shdr *sh = &section_header_table[j];
+            
+            if (sh->sh_type == SHT_REL) {
+                found_rel = 1;
+                
+                /* Get relocation table */
+                Elf32_Rel *rel_table = (Elf32_Rel *)((char *)map_start[i] + sh->sh_offset);
+                int num_rels = sh->sh_size / sh->sh_entsize;
+                
+                /* Get associated symbol table (sh_link) */
+                Elf32_Shdr *symtab_header = &section_header_table[sh->sh_link];
+                Elf32_Sym *symtab = (Elf32_Sym *)((char *)map_start[i] + symtab_header->sh_offset);
+                
+                /* Get string table for symbol names */
+                Elf32_Shdr *strtab_header = &section_header_table[symtab_header->sh_link];
+                char *strtab = (char *)map_start[i] + strtab_header->sh_offset;
+                
+                /* Debug info */
+                if (debug_mode) {
+                    printf("[DEBUG] Relocation section: %s\n", shstrtab + sh->sh_name);
+                    printf("[DEBUG] Number of relocations: %d\n", num_rels);
+                    printf("[DEBUG] Associated symbol table index: %d\n", sh->sh_link);
+                    printf("[DEBUG] Applies to section index: %d\n", sh->sh_info);
+                }
+                
+                /* Print header */
+                printf("\nRelocation section '%s' at offset 0x%x contains %d entries:\n",
+                       shstrtab + sh->sh_name, sh->sh_offset, num_rels);
+                printf("[%-3s] %-10s %-4s %-15s %s\n", 
+                       "Nr", "Offset", "Size", "Type", "Symbol");
+                
+                /* Print each relocation */
+                for (k = 0; k < num_rels; k++) {
+                    Elf32_Rel *rel = &rel_table[k];
+                    unsigned int sym_idx = ELF32_R_SYM(rel->r_info);
+                    unsigned char rel_type = ELF32_R_TYPE(rel->r_info);
+                    char *sym_name = strtab + symtab[sym_idx].st_name;
+                    
+                    printf("[%3d] %08x %-4d %-15s %s\n",
+                           k,
+                           rel->r_offset,
+                           get_rel_size(rel_type),
+                           get_rel_type_string(rel_type),
+                           sym_name);
+                }
+            }
+            else if (sh->sh_type == SHT_RELA) {
+                found_rel = 1;
+                
+                /* Get relocation table with addend */
+                Elf32_Rela *rela_table = (Elf32_Rela *)((char *)map_start[i] + sh->sh_offset);
+                int num_relas = sh->sh_size / sh->sh_entsize;
+                
+                /* Get associated symbol table (sh_link) */
+                Elf32_Shdr *symtab_header = &section_header_table[sh->sh_link];
+                Elf32_Sym *symtab = (Elf32_Sym *)((char *)map_start[i] + symtab_header->sh_offset);
+                
+                /* Get string table for symbol names */
+                Elf32_Shdr *strtab_header = &section_header_table[symtab_header->sh_link];
+                char *strtab = (char *)map_start[i] + strtab_header->sh_offset;
+                
+                /* Print header */
+                printf("\nRelocation section '%s' (with addend) contains %d entries:\n",
+                       shstrtab + sh->sh_name, num_relas);
+                printf("[%-3s] %-10s %-4s %-15s %s\n", 
+                       "Nr", "Offset", "Size", "Type", "Symbol");
+                
+                /* Print each relocation */
+                for (k = 0; k < num_relas; k++) {
+                    Elf32_Rela *rela = &rela_table[k];
+                    unsigned int sym_idx = ELF32_R_SYM(rela->r_info);
+                    unsigned char rel_type = ELF32_R_TYPE(rela->r_info);
+                    char *sym_name = strtab + symtab[sym_idx].st_name;
+                    
+                    printf("[%3d] %08x %-4d %-15s %s + %d\n",
+                           k,
+                           rela->r_offset,
+                           get_rel_size(rel_type),
+                           get_rel_type_string(rel_type),
+                           sym_name,
+                           rela->r_addend);
+                }
+            }
+        }
+        
+        if (!found_rel) {
+            printf("No relocations\n");
+        }
+    }
 }
 
 /* Check files for merge - stub */

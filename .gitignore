@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+bin/
+encoder
+
+# Dev Container (not used)
+.devcontainer/
+
+# macOS
+.DS_Storeencoder

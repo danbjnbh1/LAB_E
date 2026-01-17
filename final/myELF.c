@@ -619,7 +619,7 @@ void merge_elf_files() {
     int i;
     int out_fd;
     Elf32_Ehdr *header1, *header2;
-    Elf32_Shdr *sht1, *sht2;
+    Elf32_Shdr *sht1;
     Elf32_Shdr *shstrtab_header1;
     char *shstrtab1;
     Elf32_Ehdr new_header;
@@ -636,7 +636,6 @@ void merge_elf_files() {
     header1 = (Elf32_Ehdr *)map_start[0];
     header2 = (Elf32_Ehdr *)map_start[1];
     sht1 = (Elf32_Shdr *)((char *)map_start[0] + header1->e_shoff);
-    sht2 = (Elf32_Shdr *)((char *)map_start[1] + header2->e_shoff);
     shstrtab_header1 = &sht1[header1->e_shstrndx];
     shstrtab1 = (char *)map_start[0] + shstrtab_header1->sh_offset;
     

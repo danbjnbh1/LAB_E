@@ -473,14 +473,277 @@ void print_relocations() {
     }
 }
 
-/* Check files for merge - stub */
-void check_files_for_merge() {
-    printf("not implemented yet\n");
+/* Helper: Find symbol table in an ELF file, returns pointer and sets num_symbols */
+Elf32_Sym* find_symtab(void *map, Elf32_Ehdr *header, int *num_symbols, char **strtab) {
+    Elf32_Shdr *section_header_table = (Elf32_Shdr *)((char *)map + header->e_shoff);
+    int i;
+    int symtab_count = 0;
+    Elf32_Sym *result = NULL;
+    
+    for (i = 0; i < header->e_shnum; i++) {
+        if (section_header_table[i].sh_type == SHT_SYMTAB) {
+            symtab_count++;
+            if (symtab_count > 1) {
+                return NULL; /* More than one symbol table - not supported */
+            }
+            result = (Elf32_Sym *)((char *)map + section_header_table[i].sh_offset);
+            *num_symbols = section_header_table[i].sh_size / section_header_table[i].sh_entsize;
+            
+            /* Get associated string table */
+            Elf32_Shdr *strtab_header = &section_header_table[section_header_table[i].sh_link];
+            *strtab = (char *)map + strtab_header->sh_offset;
+        }
+    }
+    
+    if (symtab_count == 0) {
+        return NULL;
+    }
+    return result;
 }
 
-/* Merge ELF files - stub */
+/* Helper: Find symbol by name in symbol table, returns symbol or NULL */
+Elf32_Sym* find_symbol_by_name(Elf32_Sym *symtab, int num_symbols, char *strtab, const char *name) {
+    int i;
+    for (i = 1; i < num_symbols; i++) { /* Skip symbol 0 */
+        char *sym_name = strtab + symtab[i].st_name;
+        if (strcmp(sym_name, name) == 0) {
+            return &symtab[i];
+        }
+    }
+    return NULL;
+}
+
+/* Check if symbol is defined (not UNDEF) */
+int is_symbol_defined(Elf32_Sym *sym) {
+    return sym->st_shndx != SHN_UNDEF;
+}
+
+/* Check files for merge */
+void check_files_for_merge() {
+    int i, j;
+    Elf32_Ehdr *header[2];
+    Elf32_Sym *symtab[2];
+    char *strtab[2];
+    int num_symbols[2];
+    
+    /* Check that exactly 2 files are open */
+    if (num_files != 2) {
+        printf("Error: Exactly 2 ELF files must be opened for merge check\n");
+        return;
+    }
+    
+    /* Get symbol tables for both files */
+    for (i = 0; i < 2; i++) {
+        if (map_start[i] == NULL) {
+            printf("Error: File %d is not properly mapped\n", i);
+            return;
+        }
+        header[i] = (Elf32_Ehdr *)map_start[i];
+        symtab[i] = find_symtab(map_start[i], header[i], &num_symbols[i], &strtab[i]);
+        
+        if (symtab[i] == NULL) {
+            printf("Error: feature not supported (file %s must have exactly one symbol table)\n", 
+                   file_name[i]);
+            return;
+        }
+        
+        if (debug_mode) {
+            printf("[DEBUG] File %s: %d symbols\n", file_name[i], num_symbols[i]);
+        }
+    }
+    
+    printf("Checking files for merge: %s and %s\n", file_name[0], file_name[1]);
+    
+    /* For each file, check its symbols against the other file */
+    for (i = 0; i < 2; i++) {
+        int other = 1 - i; /* The other file index */
+        
+        /* Loop over all symbols in this file (except symbol 0) */
+        for (j = 1; j < num_symbols[i]; j++) {
+            Elf32_Sym *sym = &symtab[i][j];
+            char *sym_name = strtab[i] + sym->st_name;
+            
+            /* Skip empty names and file symbols */
+            if (sym_name[0] == '\0') continue;
+            if (ELF32_ST_TYPE(sym->st_info) == STT_FILE) continue;
+            if (ELF32_ST_TYPE(sym->st_info) == STT_SECTION) continue;
+            
+            /* Find this symbol in the other file */
+            Elf32_Sym *other_sym = find_symbol_by_name(symtab[other], num_symbols[other], 
+                                                        strtab[other], sym_name);
+            
+            if (!is_symbol_defined(sym)) {
+                /* Symbol is UNDEFINED in this file */
+                if (other_sym == NULL || !is_symbol_defined(other_sym)) {
+                    /* Not found in other file, or undefined there too */
+                    printf("Symbol %s undefined\n", sym_name);
+                }
+            } else {
+                /* Symbol is DEFINED in this file */
+                if (other_sym != NULL && is_symbol_defined(other_sym)) {
+                    /* Also defined in other file - multiply defined */
+                    printf("Symbol %s multiply defined\n", sym_name);
+                }
+            }
+        }
+    }
+    
+    printf("Merge check completed.\n");
+}
+
+/* Helper: Check if section is mergeable */
+int is_mergeable_section(const char *name) {
+    return (strcmp(name, ".text") == 0 ||
+            strcmp(name, ".data") == 0 ||
+            strcmp(name, ".rodata") == 0);
+}
+
+/* Helper: Find section by name in an ELF file, returns section header or NULL */
+Elf32_Shdr* find_section_by_name(void *map, Elf32_Ehdr *header, const char *name) {
+    Elf32_Shdr *section_header_table = (Elf32_Shdr *)((char *)map + header->e_shoff);
+    Elf32_Shdr *shstrtab_header = &section_header_table[header->e_shstrndx];
+    char *shstrtab = (char *)map + shstrtab_header->sh_offset;
+    int i;
+    
+    for (i = 0; i < header->e_shnum; i++) {
+        char *sec_name = shstrtab + section_header_table[i].sh_name;
+        if (strcmp(sec_name, name) == 0) {
+            return &section_header_table[i];
+        }
+    }
+    return NULL;
+}
+
+/* Merge ELF files */
 void merge_elf_files() {
-    printf("not implemented yet\n");
+    int i;
+    int out_fd;
+    Elf32_Ehdr *header1, *header2;
+    Elf32_Shdr *sht1, *sht2;
+    Elf32_Shdr *shstrtab_header1;
+    char *shstrtab1;
+    Elf32_Ehdr new_header;
+    Elf32_Shdr *new_sht;
+    Elf32_Off current_offset;
+    
+    /* Check that exactly 2 files are open */
+    if (num_files != 2) {
+        printf("Error: Exactly 2 ELF files must be opened for merge\n");
+        return;
+    }
+    
+    /* Get headers and section header tables */
+    header1 = (Elf32_Ehdr *)map_start[0];
+    header2 = (Elf32_Ehdr *)map_start[1];
+    sht1 = (Elf32_Shdr *)((char *)map_start[0] + header1->e_shoff);
+    sht2 = (Elf32_Shdr *)((char *)map_start[1] + header2->e_shoff);
+    shstrtab_header1 = &sht1[header1->e_shstrndx];
+    shstrtab1 = (char *)map_start[0] + shstrtab_header1->sh_offset;
+    
+    /* Create output file */
+    out_fd = open("out.ro", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out_fd < 0) {
+        perror("Error creating out.ro");
+        return;
+    }
+    
+    /* Step 1: Copy ELF header from first file (will update e_shoff later) */
+    memcpy(&new_header, header1, sizeof(Elf32_Ehdr));
+    write(out_fd, &new_header, sizeof(Elf32_Ehdr));
+    current_offset = sizeof(Elf32_Ehdr);
+    
+    if (debug_mode) {
+        printf("[DEBUG] Wrote ELF header, current offset: %d\n", current_offset);
+    }
+    
+    /* Step 2: Create new section header table (copy from first file) */
+    new_sht = malloc(header1->e_shnum * sizeof(Elf32_Shdr));
+    if (new_sht == NULL) {
+        perror("Error allocating section header table");
+        close(out_fd);
+        return;
+    }
+    memcpy(new_sht, sht1, header1->e_shnum * sizeof(Elf32_Shdr));
+    
+    /* Step 3: Process each section */
+    for (i = 0; i < header1->e_shnum; i++) {
+        char *sec_name = shstrtab1 + sht1[i].sh_name;
+        Elf32_Shdr *sh1 = &sht1[i];
+        Elf32_Word new_size = 0;
+        
+        /* Skip NULL section */
+        if (sh1->sh_type == SHT_NULL) {
+            new_sht[i].sh_offset = 0;
+            new_sht[i].sh_size = 0;
+            continue;
+        }
+        
+        /* Update offset in new section header */
+        new_sht[i].sh_offset = current_offset;
+        
+        if (is_mergeable_section(sec_name)) {
+            /* Mergeable section: concatenate from both files */
+            
+            /* Write content from first file */
+            if (sh1->sh_size > 0) {
+                char *content1 = (char *)map_start[0] + sh1->sh_offset;
+                write(out_fd, content1, sh1->sh_size);
+                new_size = sh1->sh_size;
+                
+                if (debug_mode) {
+                    printf("[DEBUG] Section %s: wrote %d bytes from file 1\n", sec_name, sh1->sh_size);
+                }
+            }
+            
+            /* Find same section in second file and append */
+            Elf32_Shdr *sh2 = find_section_by_name(map_start[1], header2, sec_name);
+            if (sh2 != NULL && sh2->sh_size > 0) {
+                char *content2 = (char *)map_start[1] + sh2->sh_offset;
+                write(out_fd, content2, sh2->sh_size);
+                new_size += sh2->sh_size;
+                
+                if (debug_mode) {
+                    printf("[DEBUG] Section %s: appended %d bytes from file 2\n", sec_name, sh2->sh_size);
+                }
+            }
+            
+            new_sht[i].sh_size = new_size;
+            current_offset += new_size;
+        } else {
+            /* Non-mergeable section: copy from first file as-is */
+            if (sh1->sh_size > 0) {
+                char *content1 = (char *)map_start[0] + sh1->sh_offset;
+                write(out_fd, content1, sh1->sh_size);
+                
+                if (debug_mode) {
+                    printf("[DEBUG] Section %s: copied %d bytes from file 1\n", sec_name, sh1->sh_size);
+                }
+            }
+            new_sht[i].sh_size = sh1->sh_size;
+            current_offset += sh1->sh_size;
+        }
+    }
+    
+    /* Step 4: Write section header table at the end */
+    Elf32_Off sht_offset = current_offset;
+    write(out_fd, new_sht, header1->e_shnum * sizeof(Elf32_Shdr));
+    
+    if (debug_mode) {
+        printf("[DEBUG] Wrote section header table at offset: %d\n", sht_offset);
+    }
+    
+    /* Step 5: Fix e_shoff in ELF header */
+    new_header.e_shoff = sht_offset;
+    lseek(out_fd, 0, SEEK_SET);
+    write(out_fd, &new_header, sizeof(Elf32_Ehdr));
+    
+    /* Cleanup */
+    free(new_sht);
+    close(out_fd);
+    
+    printf("Merge completed! Output file: out.ro\n");
+    printf("Verify with: readelf -S out.ro\n");
+    printf("To create executable: ld -m elf_i386 out.ro -o output_program\n");
 }
 
 /* Quit - cleanup and exit */
